@@ -9,13 +9,16 @@
 struct tile_t;
 struct tilestate_t;
 struct world_t;
+struct tile_t;
+struct entity_t;
+struct player_t;
 
 float scale = 4;
 float scalingFactor = 0.5f;
 float viewX = 0.0f;
 float viewY = 0.0f;
 int tileMapWidth = 45;
-int tileMapHeight = 45;
+int tileMapHeight = 65;//45;
 //clash of clans 1.33:1
 const char *texturePath = "quarter.png";
 float xfact = 2.0f;//1.0f;//0.7071067812f;
@@ -31,6 +34,13 @@ float wfact = 2.0f;
 float hfact = 1.0f;
 bool infoMode = false, statsMode = false;
 struct world_t *worldObj = nullptr;
+
+//Program state for current player
+int selectedEntityCount = 0;
+entity_t *selectedEntities[25];
+tilestate_t *selectedTile;
+
+unsigned char texture_hitbox[4] = { 4, 6, 5, 7 };
 
 unsigned char *texture;
 int textureHeight;
@@ -101,13 +111,19 @@ void loadTextures(const char *path) {
 }
 
 float getOffsetX(float x, float y) {
-	//return round(((((y * yfact) + (x * xfact)) * xfact) + viewX) * 1000.0f) / 1000.0f;
 	return (x * xfact) - (-y * xfact) + viewX;
 }
 
 float getOffsetY(float x, float y) {
 	return (x * yfact) + (-y * yfact) + viewY;
-	//return round(((((y * yfact) - (x * xfact)) * yfact) + viewY) * 1000.0f) / 1000.0f;
+}
+
+float getOffsetNX(float x, float y) {
+	return (x * xfact) - (-y * xfact);
+}
+
+float getOffsetNY(float x, float y) {
+	return (x * yfact) + (-y * yfact);
 }
 
 float getWidth() {
@@ -117,9 +133,6 @@ float getWidth() {
 float getHeight() {
 	return hfact * scale;
 }
-
-struct tile_t;
-struct entity_t;
 
 struct tiles {
 	static tile_t *tileRegistry[100];
@@ -145,8 +158,10 @@ struct tilestate_t {
 	int looking;
 	int hitpoints;
 	int maxhitpoints;
+	int level;
 	bool slave;
 };
+
 
 struct tilecomplete_t {
 	tilecomplete_t() {}
@@ -162,6 +177,83 @@ struct tilecomplete_t {
 	int tileX, tileY;
 };
 
+void drawTexture(unsigned char textureAtlas[4], float offsetx, float offsety, float sizex, float sizey) {
+	//Default is drawing texture from the atlas. ignoring transparent and retaining scale
+	int textureSizeW = textureAtlas[2] - textureAtlas[0];
+	int textureSizeH = textureAtlas[3] - textureAtlas[1];
+	for (int x = 0; x < sizex * textureSizeW; x++) {
+		for (int y = 0; y < sizey * textureSizeH; y++) {
+			if (offsetx + x >= adv::width || offsety + y - (textureSizeH - 1) * sizey >= adv::height || offsetx + x < 0 || offsety + y - ((textureSizeH - 1) * sizey) < 0)
+				continue;
+			float xf = ((textureAtlas[0] * textureSize) + ((float(x) / sizex) * textureSize)) / textureWidth;
+			float yf = ((textureAtlas[1] * textureSize) + ((float(y) / sizey) * textureSize)) / textureHeight;
+			pixel pix = sampleImage(xf, yf);
+			if (pix.a < 255)
+				continue;
+			ch_co_t chco = sampleImageCHCO(xf, yf);
+			adv::write(offsetx + x , offsety + y - ((textureSizeH - 1) * sizey), chco.ch, chco.co);
+		}
+	}	
+}
+
+void drawTexture(unsigned char textureAtlas[4], float offsetx, float offsety, float sizex, float sizey, float degrees) {
+	//float rad = (degrees / 180.0f)  * 3.14159f;
+	float rad = (degrees * 3.1415926f / 180.0f);
+	float originx = offsetx + (sizex / 2);
+	float originy = offsety + (sizey / 2);
+	int textureSizeW = textureAtlas[2] - textureAtlas[0];
+	int textureSizeH = textureAtlas[3] - textureAtlas[1];
+	for (int x = 0; x < sizex * textureSizeW; x++) {
+		for (int y = 0; y < sizey * textureSizeH; y++) {
+			//if (offsetx + x >= adv::width || offsety + y - (textureSizeH - 1) * sizey >= adv::height || offsetx + x < 0 || offsety + y - ((textureSizeH - 1) * sizey) < 0)
+			//	continue;
+			float xf = ((textureAtlas[0] * textureSize) + ((float(x) / sizex) * textureSize)) / textureWidth;
+			float yf = ((textureAtlas[1] * textureSize) + ((float(y) / sizey) * textureSize)) / textureHeight;
+			pixel pix = sampleImage(xf, yf);
+			if (pix.a < 255)
+				continue;
+			ch_co_t chco = sampleImageCHCO(xf, yf);
+			float xf2 = x - (sizex / 2.0f);
+			float yf2 = y - (sizey / 2.0f);
+			float newX = ((cos(rad) * (xf2)) - (sin(rad) * (yf2)));
+			float newY = ((sin(rad) * (xf2)) + (cos(rad) * (yf2)));
+			adv::write(offsetx + newX , offsety + newY - ((textureSizeH - 1) * sizey), chco.ch, chco.co);
+		}
+	}		
+}
+
+void _drawHitbar(int currentHp, int maxHp, float offsetx, float offsety, float sizex, float sizey) {
+	if (currentHp >= maxHp)
+		return;
+	
+	adv::line(offsetx, offsety, offsetx + sizex, offsety, L'#', FBLACK|BWHITE);
+	
+	float ncolor = float(currentHp) / float(maxHp);
+	float length = ncolor * sizex;
+	
+	for (int i = 0; i < length; i++) {
+		adv::line(offsetx, offsety, offsetx + i, offsety, L'#', FGREEN|BWHITE);
+	}
+}
+
+struct player_t {
+	player_t() {
+		memset(this, 0, sizeof(*this));
+		
+		color = pixel(255,0,0);
+		
+	}
+	pixel color;
+	int energyProduction;
+	int energyMaxUsage;
+	int energyStored;
+	int energyUsage;
+	int magmaProduction;
+	int magmaMaxStorage;
+	int magmaStored;
+	int magmaUsage;
+};
+
 struct entity_t {
 	int id;
 	int player;
@@ -172,6 +264,8 @@ struct entity_t {
 	int tileTargetX, tileTargetY;
 	int targetType; //build, destroy
 	bool standGround;
+	int tileStartX, tileStartY;
+	float startTileX, startTileY;
 	
 	unsigned char textureAtlas[4];
 	
@@ -185,22 +279,28 @@ struct entity_t {
 		textureAtlas[3] = d;
 	}
 	virtual void draw(float offsetx, float offsety, float sizex, float sizey) {
-		//Default is drawing texture from the atlas. ignoring transparent and retaining scale
-		int textureSizeW = textureAtlas[2] - textureAtlas[0];
-		int textureSizeH = textureAtlas[3] - textureAtlas[1];
-		for (int x = 0; x < sizex * textureSizeW; x++) {
-			for (int y = 0; y < sizey * textureSizeH; y++) {
-				if (offsetx + x >= adv::width || offsety + y - (textureSizeH - 1) * sizey >= adv::height || offsetx + x < 0 || offsety + y - ((textureSizeH - 1) * sizey) < 0)
-					continue;
-				float xf = ((textureAtlas[0] * textureSize) + ((float(x) / sizex) * textureSize)) / textureWidth;
-				float yf = ((textureAtlas[1] * textureSize) + ((float(y) / sizey) * textureSize)) / textureHeight;
-				pixel pix = sampleImage(xf, yf);
-				if (pix.a < 255)
-					continue;
-				ch_co_t chco = sampleImageCHCO(xf, yf);
-				adv::write(offsetx + x , offsety + y - ((textureSizeH - 1) * sizey), chco.ch, chco.co);
-			}
-		}
+		drawTexture(textureAtlas, offsetx, offsety, sizex, sizey);
+	}
+	void drawBoundingBox() {
+		float width = getWidth();
+		float height = getHeight();
+		float offsetx = getOffsetX(posX, posY);
+		float offsety = getOffsetY(posX, posY);
+		drawBoundingBox(offsetx * width, offsety * height, width, height);
+	}
+	virtual void drawBoundingBox(float offsetxm, float offsetym, float sizex, float sizey) {
+		//for (int i = 0; i < 360; i+=90)
+		//	drawTexture(texture_hitbox, offsetx, offsety, sizex, sizey, i);
+		float width = getWidth();
+		float height = getHeight();
+		int textureSizeW = (textureAtlas[2] - textureAtlas[0]) * width;
+		int textureSizeH = (textureAtlas[3] - textureAtlas[1]) * height;
+		float offsetx = offsetxm;
+		float offsety = offsetym - (textureSizeH / 1.5f);
+		drawTexture(texture_hitbox, offsetx, offsety, width, height, 0);
+		drawTexture(texture_hitbox, offsetx + textureSizeW - scale, offsety, width, height, 90);
+		drawTexture(texture_hitbox, offsetx, offsety + textureSizeH - scale, width, height, 270);
+		drawTexture(texture_hitbox, offsetx + textureSizeW - scale, offsety + textureSizeH - scale, width, height, 180);
 	}
 	virtual bool onCreate() { return false; }
 	virtual bool onUpdate() { return false; }
@@ -227,7 +327,12 @@ struct engineer_entity : public entity_t {
 			targetY = tileTargetY;
 		}
 		
+		float rad = atan2(posY - targetY, posX - targetX);
+		posX -= cos(rad) * move_rate;
+		posY += -sin(rad) * move_rate;
 		
+		if (((posX - targetX) * (posX - targetX)) + ((posY - targetY) * (posY - targetY)) < 0.02f)
+			standGround = true;
 	}
 	
 	bool onUpdate() override {
@@ -238,13 +343,18 @@ struct engineer_entity : public entity_t {
 };
 
 struct tile_t {
+	int hitpoints;
+	int maxhitpoints;
 	int width;
 	int id;
 	unsigned char textureAtlas[4];
 	
-	tile_t(int t0, int t1, int t2, int t3, bool skip = false) {
+	tile_t(int t0, int t1, int t2, int t3, int hitpoints = 0, int maxhitpoints = 0, bool skip = false) {
 		if (!skip)
 			tiles::add(this);
+		
+		this->hitpoints = hitpoints;
+		this->maxhitpoints = maxhitpoints;
 		setAtlas(t0,t1,t2,t3);
 	}
 	void setAtlas(int a, int b, int c, int d) {
@@ -257,6 +367,8 @@ struct tile_t {
 		tilestate_t state;
 		state.id = id;
 		state.data = 0;
+		state.hitpoints = hitpoints;
+		state.maxhitpoints = maxhitpoints;
 		return state;
 	}
 	
@@ -287,31 +399,13 @@ struct tile_t {
 	
 	
 	virtual void draw(tilecomplete_t *tc, float offsetx, float offsety, float sizex, float sizey) {
-		tilestate_t *tp = tc->state;
-		//Default is drawing texture from the atlas. ignoring transparent and retaining scale
-		int textureSizeW = textureAtlas[2] - textureAtlas[0];
-		int textureSizeH = textureAtlas[3] - textureAtlas[1];
-		for (int x = 0; x < sizex * textureSizeW; x++) {
-			for (int y = 0; y < sizey * textureSizeH; y++) {
-				if (offsetx + x >= adv::width || offsety + y - (textureSizeH - 1) * sizey >= adv::height || offsetx + x < 0 || offsety + y - ((textureSizeH - 1) * sizey) < 0)
-					continue;
-				float xf = ((textureAtlas[0] * textureSize) + ((float(x) / sizex) * textureSize)) / textureWidth;
-				float yf = ((textureAtlas[1] * textureSize) + ((float(y) / sizey) * textureSize)) / textureHeight;
-				pixel pix = sampleImage(xf, yf);
-				if (pix.a < 255)
-					continue;
-				//wchar_t ch;
-				//color_t co;
-				//getDitherColored(pix.r,pix.g,pix.b,&ch,&co);
-				ch_co_t chco = sampleImageCHCO(xf, yf);
-				adv::write(offsetx + x , offsety + y - ((textureSizeH - 1) * sizey), chco.ch, chco.co);
-			}
-		}
-		
-		//adv::write(offsetx, offsety, L'#', FCYAN|BRED);
-		//adv::write(offsetx, offsety + sizey, L'#', FCYAN|BRED);
-		//adv::write(offsetx + sizex, offsety, L'#', FCYAN|BRED);
-		//adv::write(offsetx + sizex, offsety + sizey, L'#', FCYAN|BRED);
+		drawTexture(textureAtlas, offsetx, offsety, sizex, sizey);
+		drawHitbar(tc, offsetx, offsety, sizex, sizey);
+	}
+	
+	virtual void drawHitbar(tilecomplete_t *tc, float offsetx, float offsety, float sizex, float sizey) {
+		if (tc->state->hitpoints < tc->state->maxhitpoints)
+			_drawHitbar(tc->state->hitpoints, tc->state->maxhitpoints, offsetx, offsety, sizex, sizey);		
 	}
 	
 	
@@ -340,12 +434,33 @@ struct elixir_storage : public tile_t {
 	}
 };
 
+struct magma_storage : public tile_t {
+	magma_storage() :tile_t(0,0,0,0,300,900){
+		width = 3;
+		hitpoints = 300;
+		maxhitpoints = 900;
+	}
+	//magma text max { 32, 0, 44, 18 }
+	unsigned char levels[1][2][4] = {
+		{ /*storage*/{ 20, 0, 32, 18 }, /*magma*/{ 32, 10, 44, 19 } }
+	};
+	
+	
+	
+	void draw(tilecomplete_t *tc, float offsetx, float offsety, float sizex, float sizey) override {
+		drawTexture(levels[0][1], offsetx, offsety, sizex, sizey);
+		drawTexture(levels[0][0], offsetx, offsety, sizex, sizey);
+		drawHitbar(tc, offsetx, offsety, sizex, sizey);
+	}
+};
+
 //tile_t *tiles::DEFAULT_TILE = new tile_t(0,0,2,1);
 tile_t *tiles::DEFAULT_TILE = new tile_t(0,0,4,3);
 tile_t *grass2 = new tile_t(0,3,4,6,true);
 tile_t *tiles::GRASS = new tile_t(0,1,2,2);
 tile_t *tiles::WALL = new wall_tile(4,0,8,6);
 tile_t *elixir_storage = new struct elixir_storage(8,0,20,9);
+tile_t *magma_storage = new struct magma_storage;
 
 tile_t *tiles::tileRegistry[100];
 int tiles::id = 0;
@@ -361,14 +476,25 @@ void tiles::add(tile_t *tile) {
 
 struct world_t {
 	tilestate_t *tiles;
+	player_t *players;
+	int playerCount;
 	std::vector<entity_t*> entities;
 	
 	world_t() {
+		playerCount = 1;
 		tiles = new tilestate_t[tileMapWidth * tileMapHeight];
+		players = new player_t[playerCount];
 	}
 	~world_t() {
 		delete [] tiles;
+		delete [] players;
 	}
+
+	player_t *getPlayer(int i) {
+		if (i >= playerCount || i < 0)
+			return nullptr;
+		return &players[i];
+	}	
 
 	tilestate_t *getTileState(int x, int y) {
 		return &tiles[y * tileMapWidth + x];
@@ -383,6 +509,46 @@ struct world_t {
 	}
 	void setTileState(int x, int y, tilestate_t state) {
 		*getTileState(x,y) = state;
+	}
+	tilestate_t *getMasterTileState(int ox, int oy) {
+		tilecomplete_t tc2 = getTileComplete(ox,oy);
+		if (!tc2.state->slave)
+			return tc2.state;
+		
+		int width = tc2.tile->width;
+		int p = (width - 1) / 2;
+		for (int x = ox - p; x < ox - p + width; x++) {
+			for (int y = oy - p; y < oy - p + width; y++) {
+				if (x == ox && y == oy)
+					continue;
+				tilestate_t *state = getTileState(x,y);
+				if (state->id == tc2.state->id && !state->slave)
+					return state;
+			}
+		}
+		
+		return nullptr;
+	}
+	
+	tilecomplete_t getMasterTileComplete(int x, int y) {
+		tilecomplete_t tc;
+		tc.state = getMasterTileState(x,y);
+		if (!tc.state)
+			return tc;
+		tc.tile = tiles::get(tc.state->id);
+		tc.tileX = x;
+		tc.tileY = y;
+		return tc;
+	}
+	
+	void takeHitpoints(int x, int y, int hp) {
+		
+	}
+	int getHitpoints(int x, int y) {
+		
+	}
+	void addHitpoints(int x, int y, int hp) {
+		
 	}
 	void placeTile(int ox, int oy, tile_t *tile) {
 		int width = tile->width;
@@ -445,6 +611,7 @@ struct world_t {
 			float offsetx = getOffsetX(et->posX, et->posY);
 			float offsety = getOffsetY(et->posX, et->posY);
 			et->draw(offsetx * width, offsety * height, width, height);
+			//et->drawBoundingBox(offsetx * width, offsety * height, width, height);
 		}
 	}
 };
@@ -453,6 +620,8 @@ struct world_t {
 //bos wars : 1h 1w
 void default_structures() {
 	worldObj->setTileState(1,1,tiles::WALL->getDefaultState());
+	worldObj->setTileState(1,5,magma_storage->getDefaultState());
+	worldObj->getTileState(1,5)->player = 0;
 	worldObj->spawnEntity(new engineer_entity, 1.0f, 1.0f, 1);
 }
 
@@ -460,6 +629,9 @@ void displayTileMap() {
 	float width = getWidth();
 	float height = getHeight();
 	tilecomplete_t tc;
+	tilestate_t t = tiles::DEFAULT_TILE->getDefaultState();
+	tc.tile = tiles::DEFAULT_TILE;
+	tc.state = &t;
 	
 	//for (int x = tileMapWidth - 1; x > -1; x--) {
 	//	for (int y = 0; y < tileMapHeight; y++) {
@@ -467,6 +639,7 @@ void displayTileMap() {
 	//Grass first pass
 	for (int x = 0; x < tileMapWidth; x++) {
 		for (int y = tileMapHeight - 1; y > -1; y--) {
+			tc.tileX = x; tc.tileY = y;
 			float offsetx = getOffsetX(x,y);
 			float offsety = getOffsetY(x,y);
 			
@@ -532,13 +705,85 @@ void displayMapOutline() {
 	}	
 }
 
+void displayHitboxes() {
+	for (int i = 0; i < selectedEntityCount; i++) {
+		selectedEntities[i]->drawBoundingBox();
+		float sx = selectedEntities[i]->posX;
+		float sy = selectedEntities[i]->posY;
+		float tx = selectedEntities[i]->tileTargetX;
+		float ty = selectedEntities[i]->tileTargetY;
+		float sox = getOffsetX(sx,sy) * getWidth() + viewX;
+		float soy = getOffsetY(sx,sy) * getHeight() + viewY;
+		float tox = getOffsetX(tx,ty) * getWidth() + viewX;
+		float toy = getOffsetY(tx,ty) * getHeight() + viewY;
+		adv::line(sox,soy,tox,toy,L'o', FGREEN|BBLACK);
+	}
+}
+
+void displayMinimap(int offsetx, int offsety, int sizex, int sizey) {
+	float newW, newH;
+	float mapRotatedWidth = getOffsetNX(tileMapWidth,tileMapHeight)/* * wfact*/;
+	float mapRotatedHeight = getOffsetNY(tileMapWidth,0)/* * 2 * hfact*/;
+	float rs = (sizex * (wfact / hfact)) / sizey;
+	float ri = mapRotatedWidth / mapRotatedHeight;
+	if (rs > ri) {
+		newW = (mapRotatedWidth * sizey) / mapRotatedHeight;
+		newH = sizey;
+	} else {
+		newW = sizex;
+		newH = (mapRotatedHeight * sizex) / mapRotatedWidth;
+	}
+	
+	/*
+	float nW = newW * imageScale * characterAR;
+	float nH = newH * imageScale;
+	*/
+	
+	//adv::fill(offsetx, offsety, offsetx + sizex, offsety + sizey, L'#', FRED|BBLACK);
+	adv::fill(offsetx,offsety,offsetx+newW,offsety+newH, L'M',FBLUE|BBLACK);
+	
+	float nW = newW * (wfact / hfact);
+	float nH = newH;
+	for (int x = 0; x < tileMapWidth; x++) {
+		for (int y = tileMapHeight - 1; y > -1; y--) {
+				tilecomplete_t tc = worldObj->getTileComplete(x,y);
+				float sx = getOffsetNX(x,y) * 2 * xfact;
+				float sy = (getOffsetNY(x,y)) + (getOffsetNY(tileMapWidth,0) / yfact);
+				float ssx = (sx / newW) + offsetx;
+				float ssy = (sy / newH) + offsety;
+				
+				
+				if (tc.state->id == tiles::DEFAULT_TILE->id) {
+					adv::write(ssx,ssy,L' ', FWHITE|BBLACK);
+					continue;
+				}
+				
+				adv::write(ssx,ssy, L'#', FRED|BBLACK);
+		}
+	}
+}
+
+void displayHUD() {
+	int offsetx = adv::width * 0.8f;
+	int sizex = adv::width - offsetx;
+	int offsety = 0;
+	int sizey = adv::height;
+	
+	adv::fill(offsetx, 0, offsetx + sizex, offsety + sizey, L' ', FWHITE|BBLACK);
+	adv::line(offsetx, 0, offsetx, offsety + sizey, L'|', FCYAN|BBLACK);
+	
+	displayMinimap(offsetx + 1, offsety, sizex - 1, sizex - 1);
+}
+
 void display() {	
 	displayMapOutline();
 	displayTileMap();	
 	worldObj->display();
+	displayHitboxes();
+	displayHUD();
 	
 	if (infoMode) {
-		int y = 0;
+		int y = 2;
 		auto printVar = [&](const char* varname, float value) {
 			char buf[100];
 			int i = snprintf(&buf[0], 99, "%s: %f", varname, value);
@@ -552,7 +797,15 @@ void display() {
 		printVar("wfact", wfact);
 		printVar("hfact", hfact);
 		printVar("artFact", xfact / yfact);
+		printVar("offsetnx", getOffsetNX(tileMapWidth, tileMapHeight));
+		printVar("offsetny", getOffsetNY(tileMapWidth, 0));
 	}
+	
+	//resources
+	char buf[100];
+	player_t *player = worldObj->getPlayer(0);
+	int i = snprintf(&buf[0], 99, "Energy: +%i-%i Magma: +%i-%i", player->energyProduction, player->energyUsage, player->magmaProduction, player->magmaUsage);
+	adv::write(0,0,&buf[0], FWHITE|BBLACK);
 }
 
 void init() {
@@ -584,6 +837,11 @@ int main() {
 	adv::setThreadState(false);
 	adv::setThreadSafety(false);
 	
+	printf("\033[?1003h\n");
+	mouseinterval(1);
+	mousemask(ALL_MOUSE_EVENTS, NULL);
+	MEVENT event;
+	
 	init();
 	
 	int key = 0;
@@ -595,6 +853,49 @@ int main() {
 		adv::clear();
 		
 		switch (key) {
+			case KEY_MOUSE: {
+				float width = getWidth();
+				float height = getHeight();
+				if (getmouse(&event) == OK) {
+					float scrx = event.x / getWidth() - viewX;
+					float scry = event.y / getHeight() - viewY;
+					scrx = ((scrx * 1.5) + (scry * 2)) / 6;
+					scry = -((scry * 2) / 3 - scrx);
+					if (event.bstate & BUTTON1_RELEASED) {
+						for (auto et : worldObj->entities) {
+							float posX = et->posX;
+							float posY = et->posY;
+							float dist = ((scrx - posX) * (scrx - posX)) + ((scry - posY) * (scry - posY));
+							selectedEntityCount = 0;
+							if (dist < 3.0f) {
+								selectedEntityCount = 1;
+								selectedEntities[0] = et;
+								goto endof;
+							}
+						}
+						
+						
+						tilestate_t wall = tiles::WALL->getDefaultState();
+						worldObj->setTileState(scrx, scry, wall);
+						//worldObj->placeTile(scrx, scry, tiles::WALL);
+					}
+					if (event.bstate & BUTTON3_RELEASED) {
+						//worldObj->placeTile(scrx,scry,tiles::DEFAULT_TILE);
+						if (selectedEntityCount) {
+							for (int i = 0; i < selectedEntityCount; i++) {
+								selectedEntities[i]->standGround = false;
+								selectedEntities[i]->entityTarget = nullptr;
+								selectedEntities[i]->tileTargetX = scrx;
+								selectedEntities[i]->tileTargetY = scry;
+							}
+							goto endof;
+						}
+						worldObj->setTileState(scrx,scry,tiles::DEFAULT_TILE->getDefaultState());
+					}
+				}
+			}
+			endof:;
+			break;
 			case VK_RIGHT:
 				viewX--;
 				break;				
